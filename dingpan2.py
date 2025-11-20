@@ -19,6 +19,8 @@ import logging
 import shutil
 import io
 import re
+import calendar
+from dateutil.relativedelta import relativedelta
 warnings.filterwarnings('ignore')
 
 # 设置 logging 配置
@@ -30,7 +32,7 @@ st.set_page_config(
     page_icon="📈",
     layout="wide"
 )
-st.title("同花顺问财股票监控系统")
+st.title("同花监控系统")
 st.markdown("---")
 
 # ====================== StockMonitor 类 ======================
@@ -58,7 +60,11 @@ class StockMonitor:
             'timestamps': [],
             'stock_counts': [],
             'stock_lists': [],
-            'slope_data': []
+            'slope_data': [],
+            'closing_sequences': [],
+            'date_columns': [],
+            'stock_names': [],
+            'new_stocks': []
         }
         # 监控状态
         self.is_monitoring = False
@@ -84,12 +90,10 @@ class StockMonitor:
             return True
         
         try:
-            # 首先尝试使用 Chrome
             return self.initialize_chrome_with_manager()
         except Exception as e:
             logging.error(f"Chrome initialization failed: {str(e)}")
             try:
-                # 如果 Chrome 失败，尝试 Edge
                 return self.initialize_edge_with_manager()
             except Exception as e2:
                 logging.error(f"Edge initialization also failed: {str(e2)}")
@@ -211,7 +215,6 @@ class StockMonitor:
             logging.debug("步骤: Ensuring navigation...")
             target_url = "https://www.iwencai.com/unifiedwap/"
             
-            # 简化导航逻辑
             if force_refresh:
                 logging.debug(f"步骤: Force refreshing to {target_url}")
                 self.driver.get(target_url)
@@ -221,7 +224,6 @@ class StockMonitor:
                     logging.debug(f"步骤: Navigating to {target_url}")
                     self.driver.get(target_url)
             
-            # 更宽松的等待条件
             WebDriverWait(self.driver, 10).until(
                 EC.presence_of_element_located((By.TAG_NAME, "body"))
             )
@@ -240,14 +242,12 @@ class StockMonitor:
         try:
             logging.debug("步骤: Checking for login requirement...")
             
-            # 简化的登录检测
             login_indicators = [
                 "//div[contains(text(), '扫码登录')]",
                 "//div[contains(@class, 'login')]",
                 "//div[contains(@class, 'qrcode')]",
             ]
             
-            # 快速检查
             for selector in login_indicators:
                 try:
                     elements = self.driver.find_elements(By.XPATH, selector)
@@ -271,7 +271,6 @@ class StockMonitor:
         
         start_time = time.time()
         while time.time() - start_time < timeout:
-            # 检查登录弹窗是否还存在
             login_visible = False
             try:
                 login_elements = self.driver.find_elements(By.XPATH, "//div[contains(text(), '扫码登录')]")
@@ -285,7 +284,7 @@ class StockMonitor:
             if not login_visible:
                 self.is_logged_in = True
                 logging.debug("步骤: Login completed successfully.")
-                time.sleep(2)  # 等待页面稳定
+                time.sleep(2)
                 return True
             
             time.sleep(2)
@@ -299,22 +298,17 @@ class StockMonitor:
         try:
             logging.debug("步骤: Starting optimized download flow...")
             
-            # 记录下载开始时间
             download_start_time = time.time()
             
-            # 首先清空下载目录的旧文件
             self.clean_download_directory()
             
-            # 查找下载按钮
             btn = self.find_and_cache_download_button()
             if not btn:
                 logging.error("步骤: Download button not found.")
-                # 尝试其他选择器
                 btn = self.find_alternative_download_button()
                 if not btn:
                     return False
             
-            # 点击下载按钮
             logging.debug("步骤: Clicking download button...")
             try:
                 self.driver.execute_script("arguments[0].scrollIntoView(true);", btn)
@@ -328,12 +322,10 @@ class StockMonitor:
                     logging.error(f"Regular click also failed: {str(e2)}")
                     return False
             
-            # 处理可能的登录
             time.sleep(3)
             if not self.is_logged_in:
                 self.handle_login_smartly()
             
-            # 如果登录成功，重新点击下载
             if self.is_logged_in:
                 time.sleep(3)
                 btn = self.find_and_cache_download_button()
@@ -343,7 +335,6 @@ class StockMonitor:
                     except:
                         btn.click()
             
-            # 等待下载完成，传递开始时间
             return self.wait_for_download_complete_fast(download_start_time, timeout=60)
             
         except Exception as e:
@@ -395,10 +386,8 @@ class StockMonitor:
         """改进的下载等待方法，基于时间戳检测新文件"""
         try:
             logging.debug("步骤: Waiting for download...")
-            # 临时文件扩展名
             temp_extensions = ['.crdownload', '.part', '.tmp', '.temp']
             
-            # 记录开始等待的时间
             wait_start_time = time.time()
             
             while time.time() - wait_start_time < timeout:
@@ -406,29 +395,23 @@ class StockMonitor:
                     files = os.listdir(self.download_dir)
                     logging.debug(f"步骤: Current files in directory: {files}")
                     
-                    # 遍历下载目录中的每个文件
                     for file in files:
                         file_path = os.path.join(self.download_dir, file)
                         
-                        # 跳过临时文件
                         if any(file.endswith(ext) for ext in temp_extensions):
                             logging.debug(f"步骤: Skipping temp file: {file}")
                             continue
                             
-                        # 检查文件大小和修改时间
                         if os.path.getsize(file_path) > 0:
-                            # 获取文件的修改时间和创建时间，取最大值
                             mtime = os.path.getmtime(file_path)
                             ctime = os.path.getctime(file_path)
                             file_time = max(mtime, ctime)
                             
-                            # 如果文件的时间在开始时间之后，说明是新下载的文件
                             if file_time >= start_time:
                                 logging.debug(f"步骤: Download completed with file: {file}")
                                 logging.debug(f"步骤: File time: {file_time}, Start time: {start_time}")
                                 return True
                             
-                            # 如果文件时间早于开始时间，但文件大小有变化，也可能是新下载的（覆盖）
                             file_size = os.path.getsize(file_path)
                             logging.debug(f"步骤: File {file} - Size: {file_size}, Time: {file_time}")
                 except Exception as e:
@@ -436,11 +419,9 @@ class StockMonitor:
                 
                 time.sleep(2)
             
-            # 超时后检查是否有任何文件
             files = os.listdir(self.download_dir)
             if files:
                 logging.warning(f"步骤: Timeout but found files: {files}")
-                # 即使超时，如果有文件也返回成功
                 for file in files:
                     file_path = os.path.join(self.download_dir, file)
                     if os.path.getsize(file_path) > 0:
@@ -491,12 +472,10 @@ class StockMonitor:
         try:
             logging.debug("步骤: Starting automation...")
             
-            # 刷新页面
             if not self.ensure_navigation(force_refresh=True):
                 return False
             time.sleep(3)
             
-            # 搜索操作
             if not self.find_search_box_with_cache(search_query):
                 return False
             
@@ -504,7 +483,6 @@ class StockMonitor:
                 return False
             time.sleep(5)
             
-            # 下载操作
             if not self.smart_download_flow_optimized():
                 return False
             
@@ -546,7 +524,7 @@ class StockMonitor:
             logging.error(f"Error with search button: {str(e)}")
         return False
 
-    # ==================== 改进的数据处理方法 - 修复undefined列识别问题 ====================
+    # ==================== 专门优化的双表头处理方法 ====================
     def process_downloaded_data(self):
         try:
             logging.debug("步骤: Processing downloaded data...")
@@ -557,7 +535,6 @@ class StockMonitor:
                 logging.warning("步骤: No files in download directory.")
                 return None
             
-            # 找到最新的文件
             latest_file = None
             latest_time = 0
             
@@ -575,7 +552,6 @@ class StockMonitor:
             file_path = os.path.join(self.download_dir, latest_file)
             logging.debug(f"步骤: Processing latest file: {latest_file}")
             
-            # 使用改进的方法读取文件
             if latest_file.endswith('.csv'):
                 df = self.read_iwencai_csv_improved(file_path)
             elif latest_file.endswith(('.xls', '.xlsx')):
@@ -588,73 +564,82 @@ class StockMonitor:
                 return None
                 
             stock_count = len(df)
-            slope_data = self.calculate_slopes_improved(df)
+            slope_data, closing_sequences, date_columns, stock_names = self.calculate_slopes_improved(df)
+            
+            # 计算新出现的股票
+            new_stocks = self.calculate_new_stocks(df)
             
             logging.debug(f"步骤: Successfully processed {stock_count} stocks")
+            logging.debug(f"步骤: New stocks detected: {len(new_stocks)}")
             
             return {
                 'timestamp': datetime.now(),
                 'stock_count': stock_count,
                 'stock_list': df,
-                'slopes': slope_data
+                'slopes': slope_data,
+                'closing_sequences': closing_sequences,
+                'date_columns': date_columns,
+                'stock_names': stock_names,
+                'new_stocks': new_stocks
             }
         except Exception as e:
             logging.error(f"Error processing data: {str(e)}")
             return None
 
+    def calculate_new_stocks(self, current_df):
+        """计算新出现的股票"""
+        new_stocks = []
+        
+        # 如果没有历史数据，所有股票都是新的
+        if not self.monitoring_data['stock_lists']:
+            for index, row in current_df.iterrows():
+                stock_code = self.get_stock_code(row, current_df.columns)
+                stock_name = self.get_stock_name(row, current_df.columns)
+                new_stocks.append(f"{stock_code} {stock_name}".strip())
+            return new_stocks
+        
+        # 获取上一次的股票列表
+        last_df = self.monitoring_data['stock_lists'][-1]
+        
+        # 获取当前和上一次的股票代码集合
+        current_stocks = set()
+        for index, row in current_df.iterrows():
+            stock_code = self.get_stock_code(row, current_df.columns)
+            stock_name = self.get_stock_name(row, current_df.columns)
+            current_stocks.add(f"{stock_code} {stock_name}".strip())
+        
+        last_stocks = set()
+        for index, row in last_df.iterrows():
+            stock_code = self.get_stock_code(row, last_df.columns)
+            stock_name = self.get_stock_name(row, last_df.columns)
+            last_stocks.add(f"{stock_code} {stock_name}".strip())
+        
+        # 计算新出现的股票
+        new_stocks = list(current_stocks - last_stocks)
+        
+        return new_stocks
+
     def read_iwencai_excel_improved(self, file_path):
-        """改进的Excel读取方法，结合两种方法的优势"""
+        """专门优化双表头处理的Excel读取方法 - 参考上传文件处理代码"""
         try:
-            # 读取原始数据来分析结构
+            # 先读取前几行来检测表头结构
             df_raw = pd.read_excel(file_path, header=None, nrows=10)
             logging.debug("步骤: Raw Excel data preview:")
             for i in range(min(10, len(df_raw))):
                 logging.debug(f"Row {i}: {df_raw.iloc[i].tolist()}")
             
             # 检测表头行数
-            header_rows = self.detect_header_rows(df_raw)
+            header_rows = self.detect_header_rows_improved(df_raw)
             logging.debug(f"步骤: Detected header rows: {header_rows}")
             
-            # 根据表头行数读取数据
             if header_rows == 1:
-                # 单行表头
+                # 单表头情况
                 df = pd.read_excel(file_path, header=0)
                 df.columns = [str(c).strip() for c in df.columns]
             else:
-                # 多行表头 - 使用您提供的方法
-                df_raw_full = pd.read_excel(file_path, header=None)
-                header_df = df_raw_full.iloc[:header_rows].ffill(axis=1)
-                
-                # 构建合并列名
-                columns = []
-                current_prefix = ""
-                for col in header_df.values.T:
-                    col_strs = [str(x).strip() for x in col if str(x) != "nan"]
-                    if len(col_strs) == 0:
-                        columns.append("")
-                        continue
-                    
-                    # 识别列类别
-                    if "收盘价" in col_strs[0]:
-                        current_prefix = "收盘价"
-                    elif "5日均线" in col_strs[0] or "均线" in col_strs[0]:
-                        current_prefix = "5日均线"
-                    
-                    # 提取日期部分
-                    date_part = col_strs[-1] if len(col_strs) > 1 else col_strs[0]
-                    
-                    # 构建列名
-                    if current_prefix and "undefined" in col_strs[0]:
-                        merged = f"{current_prefix}_{date_part}"
-                    else:
-                        merged = "_".join(col_strs).strip("_")
-                    columns.append(merged)
-                
-                # 读取数据部分
-                df = df_raw_full.iloc[header_rows:].reset_index(drop=True)
-                df.columns = columns
+                # 多行表头情况 - 使用上传文件处理代码的方法
+                df = self.process_double_header_excel_improved(file_path, header_rows)
             
-            # 基础数据清洗
             df = self.basic_data_cleaning(df)
             
             logging.debug(f"步骤: Final columns after processing: {list(df.columns)}")
@@ -662,25 +647,80 @@ class StockMonitor:
             
         except Exception as e:
             logging.error(f"Error reading improved Excel: {str(e)}")
-            # 备用方法
             return pd.read_excel(file_path)
 
-    def detect_header_rows(self, df_preview):
-        """检测表头行数"""
-        header_keywords = ['代码', '名称', '收盘价', '财务诊断评分', '概念']
+    def detect_header_rows_improved(self, df_preview):
+        """改进的表头行数检测 - 参考上传文件处理代码"""
+        header_keywords = ['代码', '名称', '收盘价', '开盘价', '5日均线', '均线', '财务诊断评分', 'undefined']
         
         for i in range(min(5, len(df_preview))):
             row_text = ' '.join([str(x) for x in df_preview.iloc[i] if pd.notna(x)])
-            # 检查是否包含表头关键词
             if any(keyword in row_text for keyword in header_keywords):
-                # 如果是第一行就包含关键词，可能是单行表头
                 if i == 0:
+                    # 检查下一行是否包含日期或技术指标
+                    if len(df_preview) > 1:
+                        next_row_text = ' '.join([str(x) for x in df_preview.iloc[1] if pd.notna(x)])
+                        if self.contains_date_or_technical_improved(next_row_text):
+                            return 2
                     return 1
-                # 否则返回检测到的行号（从0开始）
-                return i + 1
+                else:
+                    return i + 1
         
-        # 默认返回1（单行表头）
         return 1
+
+    def contains_date_or_technical_improved(self, text):
+        """检查文本是否包含日期或技术指标信息 - 改进版本"""
+        date_indicators = ['2024', '2025', '收盘价', '开盘价', '均线', 'MA', 'undefined', '前', '后']
+        text_str = str(text).lower()
+        return any(indicator in text_str for indicator in date_indicators)
+
+    def process_double_header_excel_improved(self, file_path, header_rows):
+        """处理双表头 - 参考上传文件处理代码的方法"""
+        try:
+            # 读取原始数据
+            df_raw = pd.read_excel(file_path, header=None)
+            
+            # 处理表头行，向前填充空值
+            header_df = df_raw.iloc[:header_rows].ffill(axis=1)
+            df = df_raw.iloc[header_rows:].reset_index(drop=True)
+            
+            # 构建合并列名 - 参考上传文件处理代码
+            columns = []
+            current_prefix = ""
+            
+            for col in header_df.values.T:
+                col_strs = [str(x).strip() for x in col if str(x) != "nan"]
+                if len(col_strs) == 0:
+                    columns.append("")
+                    continue
+                    
+                # 识别列类型前缀
+                if "收盘价" in col_strs[0]:
+                    current_prefix = "收盘价"
+                elif "5日均线" in col_strs[0] or "均线" in col_strs[0]:
+                    current_prefix = "5日均线"
+                elif "开盘价" in col_strs[0]:
+                    current_prefix = "开盘价"
+                elif "财务诊断评分" in col_strs[0]:
+                    current_prefix = "财务诊断评分"
+                
+                # 提取日期部分
+                date_part = col_strs[-1] if len(col_strs) > 1 else col_strs[0]
+                
+                # 构建列名
+                if current_prefix and "undefined" in col_strs[0]:
+                    merged = f"{current_prefix}_{date_part}"
+                else:
+                    merged = "_".join(col_strs).strip("_")
+                
+                columns.append(merged)
+            
+            df.columns = columns
+            return df
+            
+        except Exception as e:
+            logging.error(f"Error processing double header improved: {str(e)}")
+            return pd.read_excel(file_path, header=1)
 
     def basic_data_cleaning(self, df):
         """基础数据清洗"""
@@ -689,7 +729,6 @@ class StockMonitor:
         
         df_clean = df.copy()
         
-        # 清理字符串列
         for col in df_clean.select_dtypes(include=['object']).columns:
             try:
                 df_clean[col] = df_clean[col].astype(str).str.strip().replace({
@@ -698,115 +737,164 @@ class StockMonitor:
             except Exception:
                 pass
         
-        # 替换各种空值符号
         replace_symbols = ["-", "—", "空值", "null", "None", "", "NaN", "--"]
         df_clean.replace(replace_symbols, np.nan, inplace=True)
         
-        # 处理数值列
         for col in df_clean.columns:
             if df_clean[col].dtype == object:
                 try:
-                    # 移除逗号和空格
                     df_clean[col] = df_clean[col].astype(str).str.replace(',', '').str.replace(' ', '')
                 except Exception:
                     pass
                 try:
-                    # 尝试转换为数值
                     df_clean[col] = pd.to_numeric(df_clean[col], errors='ignore')
                 except Exception:
                     pass
         
-        # 移除完全空白的行和列
         df_clean = df_clean.dropna(how='all')
         df_clean = df_clean.dropna(axis=1, how='all')
         
-        # 识别股票代码和名称列
         df_clean = self.identify_stock_columns(df_clean)
         
         return df_clean
 
     def find_closing_price_columns(self, df):
-        """查找收盘价列，包括undefined列"""
+        """查找收盘价列 - 改进版本，区分收盘价、开盘价和5日均线"""
         close_cols = []
+        date_info = []
         
-        # 首先查找明确的收盘价列
-        closing_keywords = ['收盘价', 'close', 'price']
         for col in df.columns:
-            col_lower = str(col).lower()
-            if any(keyword in col_lower for keyword in closing_keywords):
-                # 检查是否是数值列
-                if pd.api.types.is_numeric_dtype(df[col]):
-                    close_cols.append(col)
+            col_str = str(col)
+            
+            # 只识别明确标记为收盘价的列
+            is_closing_col = False
+            if col_str.startswith('收盘价_'):
+                is_closing_col = True
+            elif '收盘价' in col_str and '开盘价' not in col_str and '5日均线' not in col_str:
+                is_closing_col = True
+            
+            if is_closing_col:
+                # 从列名中提取日期
+                parts = str(col).split('_')
+                if len(parts) > 1:
+                    date_str_raw = parts[-1]
+                    date_str = date_str_raw.split(' [')[0].strip()
+                    
+                    # 尝试多种日期格式解析
+                    date_obj = None
+                    for fmt in ("%Y.%m.%d", "%Y-%m-%d", "%Y%m%d", "%Y/%m/%d"):
+                        try:
+                            date_obj = datetime.strptime(date_str, fmt)
+                            break
+                        except:
+                            continue
+                    
+                    if date_obj:
+                        extracted_date = date_obj.strftime("%Y-%m-%d")
+                    else:
+                        # 如果无法解析，使用原始字符串
+                        extracted_date = date_str
                 else:
-                    # 尝试转换为数值
-                    try:
-                        df[col] = pd.to_numeric(df[col], errors='coerce')
-                        if not df[col].isna().all():
-                            close_cols.append(col)
-                    except:
-                        pass
-        
-        # 专门查找undefined列（这些也是收盘价数据）
-        for col in df.columns:
-            col_str = str(col).lower()
-            if 'undefined' in col_str:
-                # 检查是否是数值列
-                if pd.api.types.is_numeric_dtype(df[col]):
+                    extracted_date = col_str
+                
+                if self.is_valid_price_column(df[col]):
                     close_cols.append(col)
-                else:
-                    # 尝试转换为数值
+                    date_info.append(extracted_date)
+        
+        logging.debug(f"步骤: Closing price columns found: {close_cols}")
+        logging.debug(f"步骤: Corresponding dates: {date_info}")
+        
+        if close_cols and date_info:
+            close_cols, date_info = self.sort_columns_by_date(close_cols, date_info)
+            logging.debug(f"步骤: Sorted closing price columns: {close_cols}")
+            logging.debug(f"步骤: Sorted dates: {date_info}")
+        
+        return close_cols, date_info
+
+    def is_valid_price_column(self, series):
+        """检查列是否是有效的价格数据"""
+        if series.empty:
+            return False
+        
+        if not pd.api.types.is_numeric_dtype(series):
+            try:
+                series_numeric = pd.to_numeric(series, errors='coerce')
+                if series_numeric.isna().all():
+                    return False
+            except:
+                return False
+        
+        numeric_series = pd.to_numeric(series, errors='coerce')
+        valid_values = numeric_series.dropna()
+        if len(valid_values) == 0:
+            return False
+        
+        avg_value = valid_values.mean()
+        return 0.1 <= avg_value <= 10000
+
+    def sort_columns_by_date(self, columns, dates):
+        """按日期对列进行排序"""
+        pairs = list(zip(columns, dates))
+        
+        def parse_date(date_str):
+            try:
+                # 尝试多种日期格式
+                for fmt in ("%Y-%m-%d", "%Y.%m.%d", "%Y%m%d", "%Y/%m/%d"):
                     try:
-                        df[col] = pd.to_numeric(df[col], errors='coerce')
-                        if not df[col].isna().all():
-                            close_cols.append(col)
+                        return datetime.strptime(date_str, fmt)
                     except:
-                        pass
+                        continue
+                return datetime(1900, 1, 1)
+            except:
+                return datetime(1900, 1, 1)
         
-        # 如果收盘价列不够，查找包含日期的数值列
-        if len(close_cols) < 2:
-            date_pattern = r'\d{4}\.\d{2}\.\d{2}|\d{4}-\d{2}-\d{2}|\d{8}'
-            for col in df.columns:
-                col_str = str(col)
-                if re.search(date_pattern, col_str) and pd.api.types.is_numeric_dtype(df[col]):
-                    close_cols.append(col)
+        sorted_pairs = sorted(pairs, key=lambda x: parse_date(x[1]))
         
-        # 按列位置排序，确保正确的顺序（从左到右，最近的日期在最右边）
-        close_cols.sort(key=lambda x: list(df.columns).index(x))
+        sorted_columns = [pair[0] for pair in sorted_pairs]
+        sorted_dates = [pair[1] for pair in sorted_pairs]
         
-        logging.debug(f"步骤: Final closing price columns found: {close_cols}")
-        return close_cols
+        return sorted_columns, sorted_dates
 
     def calculate_slopes_improved(self, df):
-        """改进的斜率计算方法，增加详细调试信息"""
+        """改进的斜率计算方法 - 使用7天数据"""
         slopes = {}
+        closing_sequences = {}
+        date_columns_info = {}
+        stock_names = {}
         
-        # 查找收盘价列
-        close_cols = self.find_closing_price_columns(df)
+        close_cols, date_info = self.find_closing_price_columns(df)
         logging.debug(f"步骤: Found {len(close_cols)} closing price columns: {close_cols}")
+        logging.debug(f"步骤: Date info: {date_info}")
         
         if len(close_cols) < 2:
             logging.warning(f"步骤: Not enough closing price columns found. Need at least 2, found {len(close_cols)}")
-            # 为每个股票返回0斜率
             for index, row in df.iterrows():
                 stock_code = self.get_stock_code(row, df.columns)
                 stock_name = self.get_stock_name(row, df.columns)
                 key = f"{stock_code} {stock_name}".strip()
                 slopes[key] = 0
-            return slopes
+                closing_sequences[key] = []
+                date_columns_info[key] = []
+                stock_names[key] = stock_name
+            return slopes, closing_sequences, date_columns_info, stock_names
         
-        # 对每个股票计算斜率
+        # 只取最近的7天数据
+        if len(close_cols) > 7:
+            close_cols = close_cols[-7:]
+            date_info = date_info[-7:]
+            logging.debug(f"步骤: Using last 7 days data: {close_cols}")
+            logging.debug(f"步骤: Corresponding dates: {date_info}")
+        
         for index, row in df.iterrows():
             stock_code = self.get_stock_code(row, df.columns)
             stock_name = self.get_stock_name(row, df.columns)
             
-            # 提取收盘价序列
             closes = []
-            valid_columns = []
+            valid_dates = []
             
-            for col in close_cols:
+            for i, col in enumerate(close_cols):
                 val = row.get(col, np.nan)
                 if pd.notna(val):
-                    # 清理数值
                     val_str = str(val).replace(',', '').replace('—', '').replace('--', '').strip()
                     if val_str in ["", "NaN", "None", "null"]:
                         continue
@@ -814,92 +902,56 @@ class StockMonitor:
                         price = float(val_str)
                         if price > 0:
                             closes.append(price)
-                            valid_columns.append(col)
+                            valid_dates.append(date_info[i])
                     except Exception as e:
                         logging.debug(f"步骤: Failed to convert value '{val_str}' to float for column {col}: {str(e)}")
                         continue
             
-            logging.debug(f"步骤: Stock {stock_code} {stock_name} - Valid columns: {valid_columns}")
+            logging.debug(f"步骤: Stock {stock_code} {stock_name} - Valid dates: {valid_dates}")
             logging.debug(f"步骤: Stock {stock_code} {stock_name} - Raw prices: {closes}")
             
-            # 检查是否有足够的数据点
+            key = f"{stock_code} {stock_name}".strip()
+            closing_sequences[key] = closes
+            date_columns_info[key] = valid_dates
+            stock_names[key] = stock_name
+            
             if len(closes) < 2:
                 logging.debug(f"步骤: Insufficient price data for {stock_code} {stock_name}, only {len(closes)} valid values")
-                key = f"{stock_code} {stock_name}".strip()
                 slopes[key] = 0
                 continue
             
-            # 反转顺序（从旧到新）- 因为同花顺的数据通常是最近的日期在右边
-            closes = closes[::-1]
-            logging.debug(f"步骤: Stock {stock_code} {stock_name} - Reversed prices (old to new): {closes}")
-            
-            # 计算斜率
             try:
                 x = np.arange(len(closes))
                 slope, intercept, r_value, p_value, std_err = stats.linregress(x, closes)
                 
-                # 计算斜率百分比（相对于平均值）
                 avg_price = np.mean(closes)
                 slope_percentage = (slope / avg_price) * 100 if avg_price != 0 else 0
                 
-                key = f"{stock_code} {stock_name}".strip()
                 slopes[key] = slope_percentage
                 logging.debug(f"步骤: Calculated slope for {key}: {slope_percentage:.4f}% (slope={slope:.4f}, avg_price={avg_price:.4f})")
                 
             except Exception as e:
                 logging.warning(f"步骤: Failed to calculate slope for {stock_code} {stock_name}: {str(e)}")
-                key = f"{stock_code} {stock_name}".strip()
                 slopes[key] = 0
     
-        return slopes
+        return slopes, closing_sequences, date_columns_info, stock_names
 
     def read_iwencai_csv_improved(self, file_path):
         """改进的CSV读取方法"""
         try:
-            # 尝试多种编码
             encodings = ['gbk', 'utf-8', 'gb2312', 'utf-8-sig']
             
             for encoding in encodings:
                 try:
-                    # 读取原始数据
                     df_raw = pd.read_csv(file_path, encoding=encoding, header=None, nrows=10)
                     
-                    # 检测表头行数
-                    header_rows = self.detect_header_rows(df_raw)
+                    header_rows = self.detect_header_rows_improved(df_raw)
                     
                     if header_rows == 1:
                         df = pd.read_csv(file_path, encoding=encoding, header=0)
                     else:
-                        # 多行表头处理
-                        df_raw_full = pd.read_csv(file_path, encoding=encoding, header=None)
-                        header_df = df_raw_full.iloc[:header_rows].ffill(axis=1)
-                        
-                        # 构建合并列名（与Excel方法相同）
-                        columns = []
-                        current_prefix = ""
-                        for col in header_df.values.T:
-                            col_strs = [str(x).strip() for x in col if str(x) != "nan"]
-                            if len(col_strs) == 0:
-                                columns.append("")
-                                continue
-                            
-                            if "收盘价" in col_strs[0]:
-                                current_prefix = "收盘价"
-                            elif "5日均线" in col_strs[0] or "均线" in col_strs[0]:
-                                current_prefix = "5日均线"
-                            
-                            date_part = col_strs[-1] if len(col_strs) > 1 else col_strs[0]
-                            
-                            if current_prefix and "undefined" in col_strs[0]:
-                                merged = f"{current_prefix}_{date_part}"
-                            else:
-                                merged = "_".join(col_strs).strip("_")
-                            columns.append(merged)
-                        
-                        df = df_raw_full.iloc[header_rows:].reset_index(drop=True)
-                        df.columns = columns
+                        df = self.process_double_header_csv_improved(file_path, encoding, header_rows)
                     
-                    # 基础数据清洗
                     df = self.basic_data_cleaning(df)
                     return df
                     
@@ -909,22 +961,60 @@ class StockMonitor:
                     logging.debug(f"Failed to read CSV with encoding {encoding}: {str(e)}")
                     continue
             
-            # 所有编码都失败，尝试默认读取
             return pd.read_csv(file_path)
             
         except Exception as e:
             logging.error(f"Error reading improved CSV: {str(e)}")
             return None
 
+    def process_double_header_csv_improved(self, file_path, encoding, header_rows):
+        """处理CSV的双表头 - 改进版本"""
+        try:
+            df_raw = pd.read_csv(file_path, encoding=encoding, header=None)
+            header_df = df_raw.iloc[:header_rows].ffill(axis=1)
+            df = df_raw.iloc[header_rows:].reset_index(drop=True)
+            
+            columns = []
+            current_prefix = ""
+            
+            for col in header_df.values.T:
+                col_strs = [str(x).strip() for x in col if str(x) != "nan"]
+                if len(col_strs) == 0:
+                    columns.append("")
+                    continue
+                    
+                if "收盘价" in col_strs[0]:
+                    current_prefix = "收盘价"
+                elif "5日均线" in col_strs[0] or "均线" in col_strs[0]:
+                    current_prefix = "5日均线"
+                elif "开盘价" in col_strs[0]:
+                    current_prefix = "开盘价"
+                elif "财务诊断评分" in col_strs[0]:
+                    current_prefix = "财务诊断评分"
+                
+                date_part = col_strs[-1] if len(col_strs) > 1 else col_strs[0]
+                
+                if current_prefix and "undefined" in col_strs[0]:
+                    merged = f"{current_prefix}_{date_part}"
+                else:
+                    merged = "_".join(col_strs).strip("_")
+                
+                columns.append(merged)
+            
+            df.columns = columns
+            return df
+            
+        except Exception as e:
+            logging.error(f"Error processing double header CSV improved: {str(e)}")
+            return pd.read_csv(file_path, encoding=encoding, header=1)
+
     def auto_detect_iwencai_file_improved(self, file_path):
         """改进的自动文件检测"""
         try:
-            # 尝试Excel
             df = self.read_iwencai_excel_improved(file_path)
             if df is not None and not df.empty:
                 return df
             
-            # 尝试CSV
             df = self.read_iwencai_csv_improved(file_path)
             if df is not None and not df.empty:
                 return df
@@ -938,7 +1028,6 @@ class StockMonitor:
         """识别股票代码和名称列"""
         df_clean = df.copy()
         
-        # 查找代码列
         code_patterns = ['代码', 'code', 'symbol']
         for col in df_clean.columns:
             col_lower = str(col).lower()
@@ -946,8 +1035,7 @@ class StockMonitor:
                 df_clean = df_clean.rename(columns={col: '股票代码'})
                 break
         
-        # 查找名称列
-        name_patterns = ['名称', 'name', '股票名称']
+        name_patterns = ['名称', 'name', '股票名称', '股票简称']
         for col in df_clean.columns:
             col_lower = str(col).lower()
             if any(pattern in col_lower for pattern in name_patterns):
@@ -964,7 +1052,7 @@ class StockMonitor:
         return f"代码{row.name}"
 
     def get_stock_name(self, row, columns):
-        name_keywords = ['名称', 'name', '股票名称']
+        name_keywords = ['名称', 'name', '股票名称', '股票简称']
         for col in columns:
             if any(keyword in str(col).lower() for keyword in name_keywords):
                 return str(row[col]) if pd.notna(row[col]) else f"股票{row.name}"
@@ -999,6 +1087,10 @@ class StockMonitor:
                     self.monitoring_data['stock_counts'].append(data['stock_count'])
                     self.monitoring_data['stock_lists'].append(data['stock_list'])
                     self.monitoring_data['slope_data'].append(data['slopes'])
+                    self.monitoring_data['closing_sequences'].append(data['closing_sequences'])
+                    self.monitoring_data['date_columns'].append(data['date_columns'])
+                    self.monitoring_data['stock_names'].append(data['stock_names'])
+                    self.monitoring_data['new_stocks'].append(data['new_stocks'])
                     return True
             return False
         except Exception as e:
@@ -1063,17 +1155,213 @@ class StockMonitor:
             y=stocks,
             orientation='h',
             marker_color=colors,
-            text=[f"{s:.4f}" for s in slopes],
+            text=[f"{s:.2f}%" for s in slopes],
             textposition='auto'
         ))
         fig.update_layout(
-            title='股票走势斜率排序（前20名）',
+            title='股票走势斜率排序（前20名）- 7天斜率',
             xaxis_title='斜率(%)',
             yaxis_title='股票',
             template='plotly_white',
             height=500
         )
         st.plotly_chart(fig, use_container_width=True)
+
+    def create_individual_stock_trend_charts(self):
+        """为每个股票创建单独的走势图 - 使用改进的日期处理"""
+        if (not self.monitoring_data['slope_data'] or 
+            not self.monitoring_data['closing_sequences'] or
+            not self.monitoring_data['date_columns'] or
+            not self.monitoring_data['stock_names'] or
+            not self.monitoring_data['new_stocks']):
+            st.info("暂无走势数据")
+            return
+        
+        latest_slopes = self.monitoring_data['slope_data'][-1]
+        latest_sequences = self.monitoring_data['closing_sequences'][-1]
+        latest_dates = self.monitoring_data['date_columns'][-1]
+        latest_stock_names = self.monitoring_data['stock_names'][-1]
+        latest_new_stocks = self.monitoring_data['new_stocks'][-1]
+        
+        if not latest_slopes or not latest_sequences or not latest_dates or not latest_stock_names or not latest_new_stocks:
+            return
+        
+        sorted_slopes = sorted(latest_slopes.items(), key=lambda x: x[1], reverse=True)
+        top_stocks = sorted_slopes[:20]
+        
+        if not top_stocks:
+            return
+        
+        st.subheader("斜率前20股票走势图 - 7天数据")
+        
+        for i, (stock, slope) in enumerate(top_stocks):
+            if stock in latest_sequences and stock in latest_dates and stock in latest_stock_names:
+                price_sequence = latest_sequences[stock]
+                date_sequence = latest_dates[stock]
+                stock_name = latest_stock_names[stock]
+                
+                # 检查是否是新增股票
+                is_new_stock = stock in latest_new_stocks
+                
+                if len(price_sequence) >= 2 and len(date_sequence) == len(price_sequence):
+                    # 改进的日期处理：确保日期按正确顺序排列且只包含交易日
+                    try:
+                        # 将日期字符串转换为datetime对象进行排序
+                        date_objs = []
+                        valid_prices = []
+                        
+                        for date_str, price in zip(date_sequence, price_sequence):
+                            try:
+                                # 尝试多种日期格式
+                                date_obj = None
+                                for fmt in ("%Y.%m.%d", "%Y-%m-%d", "%Y%m%d", "%Y/%m/%d"):
+                                    try:
+                                        date_obj = datetime.strptime(date_str, fmt)
+                                        break
+                                    except:
+                                        continue
+                                
+                                if date_obj:
+                                    # 检查是否为交易日（排除周六周日）
+                                    if date_obj.weekday() < 5:  # 0-4表示周一到周五
+                                        date_objs.append(date_obj)
+                                        valid_prices.append(price)
+                                    else:
+                                        logging.debug(f"跳过非交易日: {date_str}")
+                                else:
+                                    logging.warning(f"无法解析日期: {date_str}")
+                            except Exception as e:
+                                logging.warning(f"日期解析错误 {date_str}: {str(e)}")
+                                continue
+                        
+                        # 如果成功解析了日期，按日期排序
+                        if len(date_objs) > 0:
+                            # 按日期排序（从早到晚）
+                            sorted_data = sorted(zip(date_objs, valid_prices))
+                            sorted_dates = [date.strftime('%Y-%m-%d') for date, _ in sorted_data]
+                            sorted_prices = [price for _, price in sorted_data]
+                            
+                            # 确保只显示7个交易日的数据
+                            if len(sorted_dates) > 7:
+                                sorted_dates = sorted_dates[-7:]
+                                sorted_prices = sorted_prices[-7:]
+                            
+                            date_sequence = sorted_dates
+                            price_sequence = sorted_prices
+                            logging.debug(f"步骤: Successfully processed dates for {stock}: {date_sequence}")
+                        else:
+                            # 如果日期解析失败，使用原始顺序但记录警告
+                            logging.warning(f"步骤: Date parsing incomplete for {stock}, using original order")
+                            st.warning(f"股票 {stock} 的日期数据不完整，可能影响图表显示")
+                    except Exception as e:
+                        logging.warning(f"Failed to process dates for {stock}: {str(e)}")
+                        # 出错时保持原始顺序
+                    
+                    # 创建折线图
+                    fig = go.Figure()
+                    
+                    # 主价格线
+                    fig.add_trace(go.Scatter(
+                        x=date_sequence,
+                        y=price_sequence,
+                        mode='lines+markers+text',
+                        name=f"{stock}",
+                        line=dict(color='#1f77b4', width=3),
+                        marker=dict(size=8, color='#ff7f0e'),
+                        text=[f"{price:.2f}" for price in price_sequence],
+                        textposition="top center",
+                        hovertemplate='<b>%{x}</b><br>收盘价: %{y:.2f}元<extra></extra>'
+                    ))
+                    
+                    # 添加趋势线
+                    if len(price_sequence) >= 2:
+                        try:
+                            x_numeric = np.arange(len(price_sequence))
+                            slope_val, intercept, _, _, _ = stats.linregress(x_numeric, price_sequence)
+                            trend_line = intercept + slope_val * x_numeric
+                            
+                            fig.add_trace(go.Scatter(
+                                x=date_sequence,
+                                y=trend_line,
+                                mode='lines',
+                                name='趋势线',
+                                line=dict(color='red', width=2, dash='dash'),
+                                opacity=0.7
+                            ))
+                        except Exception as e:
+                            logging.debug(f"Failed to add trend line for {stock}: {str(e)}")
+                    
+                    # 计算价格范围用于设置Y轴
+                    price_min = min(price_sequence) if price_sequence else 0
+                    price_max = max(price_sequence) if price_sequence else 0
+                    price_range = price_max - price_min
+                    y_padding = price_range * 0.1 if price_range > 0 else (price_min * 0.1 if price_min > 0 else 1)
+                    
+                    # 更新布局，在标题中包含股票简称和新股票标记
+                    title = f"<b>{stock}</b> - {stock_name} - 7天斜率: {slope:.2f}%"
+                    if is_new_stock:
+                        title += " 🆕"  # 添加新股票标记
+                    
+                    fig.update_layout(
+                        title=title,
+                        xaxis_title='<b>日期</b>',
+                        yaxis_title='<b>收盘价(元)</b>',
+                        template='plotly_white',
+                        height=400,
+                        showlegend=True,
+                        xaxis=dict(
+                            tickangle=45,
+                            # 使用category类型确保正确显示日期
+                            type='category',
+                            # 确保x轴按时间顺序显示
+                            categoryorder='array',
+                            categoryarray=date_sequence
+                        ),
+                        yaxis=dict(
+                            range=[price_min - y_padding, price_max + y_padding] if price_sequence else [0, 10]
+                        ),
+                        hovermode='x unified'
+                    )
+                    
+                    # 显示图表
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # 显示股票统计数据
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        if price_sequence:
+                            st.metric("最新价格", f"{price_sequence[-1]:.2f}元")
+                        else:
+                            st.metric("最新价格", "N/A")
+                    with col2:
+                        if is_new_stock:
+                            st.metric("股票简称", f"{stock_name} 🆕")  # 新股票标记
+                        else:
+                            st.metric("股票简称", stock_name)
+                    with col3:
+                        if price_sequence and price_sequence[0] != 0:
+                            change_percent = (price_sequence[-1] - price_sequence[0]) / price_sequence[0] * 100
+                            st.metric("涨跌幅", f"{change_percent:.2f}%")
+                        else:
+                            st.metric("涨跌幅", "N/A")
+                    with col4:
+                        st.metric("数据点数", len(price_sequence))
+                    
+                    # 显示日期范围信息
+                    if len(date_sequence) >= 2:
+                        st.info(f"数据时间范围: {date_sequence[0]} 至 {date_sequence[-1]} (共{len(date_sequence)}个交易日)")
+                    elif len(date_sequence) == 1:
+                        st.info(f"数据时间: {date_sequence[0]} (共{len(date_sequence)}个交易日)")
+                    else:
+                        st.warning("无有效交易日数据")
+                    
+                    # 在图表之间添加分隔线（除了最后一个）
+                    if i < len(top_stocks) - 1:
+                        st.markdown("---")
+                else:
+                    st.warning(f"股票 {stock} 的数据不完整，无法绘制走势图")
+            else:
+                st.warning(f"股票 {stock} 缺少价格、日期或名称数据")
 
     def show_monitoring_dashboard(self):
         st.header("监控仪表板")
@@ -1098,63 +1386,60 @@ class StockMonitor:
             else:
                 st.metric("监控状态", "已停止")
         
+        # 显示新出现股票的信息
+        if self.monitoring_data['new_stocks'] and len(self.monitoring_data['new_stocks']) > 0:
+            latest_new_stocks = self.monitoring_data['new_stocks'][-1]
+            if latest_new_stocks:
+                st.subheader("🎉 新出现股票")
+                st.info(f"本次刷新发现了 {len(latest_new_stocks)} 只新股票")
+                for i, stock in enumerate(latest_new_stocks):
+                    st.success(f"{i+1}. {stock}")
+        
         self.create_stock_count_chart()
-        self.create_slope_chart()
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            self.create_slope_chart()
+        with col2:
+            st.subheader("股票走势分析")
+            st.info("下方将显示每个股票的详细走势图，基于7天收盘价计算斜率")
+            st.info("🆕 标记表示新出现的股票")
+            st.info("📈 时间轴已按正确的时间顺序排列，不含周六周日")
+        
+        self.create_individual_stock_trend_charts()
         
         if self.monitoring_data['stock_lists']:
             st.subheader("最新股票列表")
             latest_df = self.monitoring_data['stock_lists'][-1]
-            st.dataframe(latest_df.head(10), use_container_width=True)
             
-            # 显示调试信息
-            with st.expander("详细调试信息"):
-                st.write("数据列信息:")
-                st.write(f"总列数: {len(latest_df.columns)}")
-                st.write("所有列名:")
-                for i, col in enumerate(latest_df.columns):
-                    st.write(f"{i}: '{col}'")
+            # 标记新出现的股票
+            if self.monitoring_data['new_stocks'] and len(self.monitoring_data['new_stocks']) > 0:
+                latest_new_stocks = self.monitoring_data['new_stocks'][-1]
                 
-                # 显示找到的收盘价列
-                close_cols = self.find_closing_price_columns(latest_df)
-                st.write(f"找到的收盘价列 ({len(close_cols)} 个):")
-                for i, col in enumerate(close_cols):
-                    st.write(f"  {i}: '{col}'")
+                # 创建显示用的DataFrame，添加新股票标记
+                display_df = latest_df.copy()
                 
-                # 显示前几个股票的详细数据
-                st.write("前3个股票的详细收盘价数据:")
-                for i in range(min(3, len(latest_df))):
-                    row = latest_df.iloc[i]
-                    stock_code = self.get_stock_code(row, latest_df.columns)
-                    stock_name = self.get_stock_name(row, latest_df.columns)
-                    
-                    st.write(f"**{stock_code} {stock_name}**:")
-                    
-                    # 显示所有收盘价列的值
-                    price_data = []
-                    for col in close_cols:
-                        val = row.get(col, np.nan)
-                        price_data.append(f"'{col}': {val}")
-                    
-                    st.write("收盘价数据: " + ", ".join(price_data))
-                    
-                    # 显示计算出的斜率
-                    if self.monitoring_data['slope_data']:
-                        latest_slopes = self.monitoring_data['slope_data'][-1]
-                        key = f"{stock_code} {stock_name}".strip()
-                        slope = latest_slopes.get(key, "未找到")
-                        st.write(f"计算出的斜率: {slope}")
+                # 添加新股票标记列
+                display_df['是否新股票'] = ''
+                for index, row in display_df.iterrows():
+                    stock_code = self.get_stock_code(row, display_df.columns)
+                    stock_name = self.get_stock_name(row, display_df.columns)
+                    stock_key = f"{stock_code} {stock_name}".strip()
+                    if stock_key in latest_new_stocks:
+                        display_df.at[index, '是否新股票'] = '🆕'
                 
-                # 显示所有股票的斜率
-                if self.monitoring_data['slope_data']:
-                    latest_slopes = self.monitoring_data['slope_data'][-1]
-                    st.write("所有股票的斜率:")
-                    slope_data = []
-                    for stock, slope in latest_slopes.items():
-                        slope_data.append({"股票": stock, "斜率(%)": f"{slope:.4f}%"})
-                    
-                    if slope_data:
-                        slope_df = pd.DataFrame(slope_data)
-                        st.dataframe(slope_df, use_container_width=True)
+                st.dataframe(display_df, use_container_width=True)
+            else:
+                st.dataframe(latest_df, use_container_width=True)
+            
+            with st.expander("数据统计信息"):
+                st.write(f"总股票数: {len(latest_df)}")
+                st.write(f"数据列数: {len(latest_df.columns)}")
+                
+                numeric_cols = latest_df.select_dtypes(include=[np.number]).columns.tolist()
+                if numeric_cols:
+                    st.write("数值列统计:")
+                    st.dataframe(latest_df[numeric_cols].describe(), use_container_width=True)
 
     def close(self):
         self.stop_monitoring()
@@ -1171,7 +1456,6 @@ def add_export_functionality(monitor):
     if monitor.monitoring_data['stock_lists']:
         latest_data = monitor.monitoring_data['stock_lists'][-1]
         
-        # CSV导出
         csv_data = latest_data.to_csv(index=False).encode('utf-8-sig')
         st.sidebar.download_button(
             label="导出CSV",
@@ -1180,7 +1464,6 @@ def add_export_functionality(monitor):
             mime="text/csv"
         )
         
-        # Excel导出
         excel_buffer = io.BytesIO()
         with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
             latest_data.to_excel(writer, index=False, sheet_name='股票数据')
@@ -1196,11 +1479,10 @@ def main():
     if 'monitor' not in st.session_state:
         st.session_state.monitor = StockMonitor()
     if 'search_query' not in st.session_state:
-        st.session_state.search_query = "下影线＞上影线，去掉st，去掉北交所，5日均线、10日均线、20日、60日均线多头排列，财务综合评分大于2，上升通道，5个交易日每日收盘价"
+        st.session_state.search_query = "2025年11月12日收盘价大于5日均线，2025年11月13日收盘价大于5日均线，2025年11月14日收盘价大于5日均线，2025年11月17日收盘价大于5日均线，2025年11月18日收盘价大于5日均线，2025年11月19日收盘价大于5日均线，2025年11月20日收盘价大于5日均线，非ST，非北交所，财务综合评分大于2.5"  # 修改为7个交易日
     
     st.sidebar.title("控制面板")
     
-    # 显示缓存状态
     st.sidebar.subheader("固化匹配状态")
     cache_data = []
     for element_type, cache_info in st.session_state.monitor.cached_selectors.items():
@@ -1218,7 +1500,12 @@ def main():
             })
     st.sidebar.dataframe(pd.DataFrame(cache_data), use_container_width=True)
     
-    # 一键自动化测试
+    st.sidebar.subheader("搜索设置")
+    search_query = st.sidebar.text_area("搜索查询", value=st.session_state.search_query, height=100)
+    if search_query != st.session_state.search_query:
+        st.session_state.search_query = search_query
+        st.sidebar.success("搜索查询已更新")
+    
     if st.sidebar.button("一键自动化测试", type="primary"):
         with st.spinner("执行一键自动化测试..."):
             if st.session_state.monitor.one_click_automation_with_refresh(st.session_state.search_query):
@@ -1228,13 +1515,16 @@ def main():
                     st.session_state.monitor.monitoring_data['stock_counts'].append(data['stock_count'])
                     st.session_state.monitor.monitoring_data['stock_lists'].append(data['stock_list'])
                     st.session_state.monitor.monitoring_data['slope_data'].append(data['slopes'])
+                    st.session_state.monitor.monitoring_data['closing_sequences'].append(data['closing_sequences'])
+                    st.session_state.monitor.monitoring_data['date_columns'].append(data['date_columns'])
+                    st.session_state.monitor.monitoring_data['stock_names'].append(data['stock_names'])
+                    st.session_state.monitor.monitoring_data['new_stocks'].append(data['new_stocks'])
                     st.success("一键自动化测试成功")
                 else:
                     st.error("数据处理失败")
             else:
                 st.error("一键自动化测试失败")
     
-    # 监控控制
     st.sidebar.subheader("自动监控")
     interval = st.sidebar.slider("监控间隔(分钟)", 1, 30, 5)
     col1, col2 = st.sidebar.columns(2)
@@ -1248,7 +1538,6 @@ def main():
         if st.button("停止监控"):
             st.session_state.monitor.stop_monitoring()
     
-    # 显示监控状态
     if st.session_state.monitor.is_monitoring:
         st.sidebar.success("监控运行中")
         if st.session_state.monitor.next_execution_time:
@@ -1256,22 +1545,38 @@ def main():
     else:
         st.sidebar.info("监控已停止")
     
-    # 添加数据导出功能
     add_export_functionality(st.session_state.monitor)
     
-    # 显示监控仪表板
     st.session_state.monitor.show_monitoring_dashboard()
     
-    # 使用指南
     with st.expander("使用说明"):
         st.markdown("""
         ### 系统特性
-        - **自动驱动管理**: 使用 webdriver-manager 自动下载和管理浏览器驱动
-        - **智能登录处理**: 扫码登录后自动检测并继续流程
+        - **7天斜率计算**: 基于最近7个交易日的收盘价计算股票走势斜率
+        - **新股票识别**: 每次刷新自动识别新出现的股票并标记
+        - **双表头优化**: 专门优化同花顺双表头格式，自动处理undefined字段
+        - **智能列名**: 遇到undefined字段时，自动使用另一行的值来命名
+        - **股票简称显示**: 在折线图标题和第二列中显示股票简称
+        - **日期匹配**: 自动匹配收盘价列与对应日期，确保走势图横坐标显示正确日期
+        - **时间轴优化**: 坐标轴按正确的时间顺序排列，以一天为单位，不含周六周日
         - **实时监控**: 可设置定时自动执行
         - **数据导出**: 支持CSV和Excel格式导出
-        - **智能数据清洗**: 专门针对同花顺问财的两行表头格式优化
-        - **改进的斜率计算**: 准确计算5天内走势的斜率，特别处理undefined列
+        
+        ### 7天斜率计算
+        - 系统会自动获取最近7个交易日的收盘价数据
+        - 使用线性回归计算这7天的价格趋势斜率
+        - 斜率以百分比形式显示，表示价格变化的趋势强度
+        
+        ### 时间轴优化
+        - 自动识别和解析日期格式
+        - 按时间先后顺序正确排列坐标轴
+        - 确保时间序列正确显示，不含周六周日
+        - 显示完整的时间范围信息
+        
+        ### 新股票识别
+        - 系统会自动比较当前和上一次的股票列表
+        - 新出现的股票会在图表标题和股票列表中标记为 🆕
+        - 在监控仪表板顶部会显示新出现股票的数量和列表
         
         ### 操作步骤
         1. 点击"一键自动化测试"进行首次测试
@@ -1279,24 +1584,13 @@ def main():
         3. 点击"开始监控"启动自动监控
         4. 系统会定期自动执行并更新数据
         5. 使用侧边栏的数据导出功能下载数据
-        
-        ### 注意事项
-        - 首次运行会下载浏览器驱动，请保持网络连接
-        - 扫码登录后请勿关闭浏览器窗口
-        - 如需停止监控，请点击"停止监控"按钮
-        - 下载的文件会自动保存在临时目录，可通过导出功能保存到本地
-        - 系统专门优化了同花顺问财的两行表头格式处理
-        - 系统会自动识别 undefined 列作为收盘价数据用于斜率计算
-        - 查看"详细调试信息"展开面板可以了解数据解析和斜率计算的详细过程
         """)
     
-    # 关闭系统
     st.sidebar.markdown("---")
     if st.sidebar.button("关闭系统"):
         st.session_state.monitor.close()
         st.sidebar.success("系统已关闭")
     
-    # 监控循环
     if st.session_state.monitor.is_monitoring:
         now = datetime.now()
         if now >= st.session_state.monitor.next_execution_time:
