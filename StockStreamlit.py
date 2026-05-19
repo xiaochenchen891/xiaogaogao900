@@ -17,6 +17,27 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+# ====================== 默认配置 ======================
+DEFAULTS = {
+    "show_days":    7,
+    "chart_h":      300,
+    "bins":         30,
+    "auto_refresh": True,
+}
+
+# 初始化 session_state
+for k, v in DEFAULTS.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
+
+
+def reset_defaults():
+    """恢复所有控件到默认值"""
+    for k, v in DEFAULTS.items():
+        st.session_state[k] = v
+    st.cache_data.clear()
+
+
 # ====================== 是否交易时段 ======================
 def is_market_open():
     now = datetime.now()
@@ -81,6 +102,13 @@ st.markdown("""
     .lg-red::before    {background:#ef9a9a;}
     .lg-orange::before {background:#ffcc80;}
 
+    /* 恢复按钮高亮 */
+    .reset-tip {
+        background:#fffde7; border:1px dashed #fbc02d;
+        border-radius:6px; padding:6px 8px; margin-top:8px;
+        font-size:0.75rem; color:#795548;
+    }
+
     [data-testid="stVerticalBlock"] {gap: 0.35rem !important;}
     [data-testid="stHorizontalBlock"] {gap: 0.5rem !important;}
 </style>
@@ -135,7 +163,6 @@ def fetch_tencent(code, market, days):
     return df.sort_values("date").reset_index(drop=True)
 
 
-# 交易时段：30 秒缓存（按时间戳分桶）
 @st.cache_data(ttl=30, show_spinner=False)
 def fetch_data_live(code, market, days, _stamp):
     for fn in (fetch_sina, fetch_tencent):
@@ -148,7 +175,6 @@ def fetch_data_live(code, market, days, _stamp):
     return None
 
 
-# 非交易时段：5 分钟缓存
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_data_cached(code, market, days):
     for fn in (fetch_sina, fetch_tencent):
@@ -179,9 +205,6 @@ def compute_indicators(df):
 
 # ====================== 量价综合：支撑/压力 ======================
 def find_levels_vp(df_full, bins=30):
-    """
-    多窗口（20/60/120日）量价加权融合 → 综合支撑 / 压力
-    """
     close = float(df_full["close"].iloc[-1])
     n = len(df_full)
     raw = [(min(20, n), 0.25), (min(60, n), 0.45), (min(120, n), 0.30)]
@@ -209,13 +232,13 @@ def find_levels_vp(df_full, bins=30):
         recent = df_full.tail(window).reset_index(drop=True)
         m = len(recent)
 
-        tv = np.zeros(bins)   # 总成交量
-        uv = np.zeros(bins)   # 上涨日量
-        dv = np.zeros(bins)   # 下跌日量
-        st_ = np.zeros(bins)  # 触及支撑次数
-        rt_ = np.zeros(bins)  # 触及压力次数
-        sr  = np.zeros(bins)  # 反弹确认
-        rr  = np.zeros(bins)  # 回落确认
+        tv = np.zeros(bins)
+        uv = np.zeros(bins)
+        dv = np.zeros(bins)
+        st_ = np.zeros(bins)
+        rt_ = np.zeros(bins)
+        sr  = np.zeros(bins)
+        rr  = np.zeros(bins)
 
         avg_range = (recent["high"] - recent["low"]).replace(0, np.nan).mean()
         if pd.isna(avg_range) or avg_range <= 0:
@@ -262,7 +285,6 @@ def find_levels_vp(df_full, bins=30):
         if tv.max() > 0:
             comb_vol += (tv / tv.max()) * norm_wt
 
-    # 距离惩罚（远离当前价的位失效）
     dist = np.abs(centers - close) / max(close, 1e-9)
     penalty = np.exp(-dist * 8)
     fs = comb_sup * penalty
@@ -312,13 +334,11 @@ def plot_card_chart(df_show, levels, height=300):
 
     fig = go.Figure()
 
-    # 4 个色带
     fig.add_hrect(y0=res,   y1=y_max, fillcolor="rgba(255,152,0,0.10)", line_width=0, layer="below")
     fig.add_hrect(y0=stop,  y1=sup,   fillcolor="rgba(76,175,80,0.10)", line_width=0, layer="below")
     fig.add_hrect(y0=y_min, y1=stop,  fillcolor="rgba(244,67,54,0.10)", line_width=0, layer="below")
     fig.add_hrect(y0=al,    y1=ah,    fillcolor="rgba(0,188,212,0.22)", line_width=0, layer="below")
 
-    # 三条参考线
     fig.add_hline(y=res,  line_dash="dash",    line_color="#e53935", line_width=1.5,
                   annotation_text=f"<b>压力 {res:.2f}</b>", annotation_position="top right",
                   annotation_font=dict(size=10, color="#e53935"))
@@ -329,7 +349,6 @@ def plot_card_chart(df_show, levels, height=300):
                   annotation_text=f"<b>止损 {stop:.2f}</b>", annotation_position="bottom right",
                   annotation_font=dict(size=10, color="#ff9800"))
 
-    # 收盘价折线
     fig.add_trace(go.Scatter(
         x=df["x"], y=df["close"],
         mode="lines+markers",
@@ -348,7 +367,6 @@ def plot_card_chart(df_show, levels, height=300):
             line=dict(color="#26c6da", width=1.2, dash="dash")
         ))
 
-    # 现价标注
     fig.add_annotation(
         x=df["x"].iloc[-1], y=close_now,
         text=f"<b>现价 {close_now:.2f}</b>",
@@ -403,16 +421,54 @@ def render_card(name, df_show, levels, height):
     """, unsafe_allow_html=True)
 
 
-# ====================== 侧边栏 ======================
+# ====================== 侧边栏（含恢复机制）======================
 with st.sidebar:
     st.markdown("## ⚙️ 设置")
-    show_days   = st.slider("显示天数", 5, 30, 7, 1)
-    chart_h     = st.slider("单图高度", 220, 420, 300, 10)
-    bins        = st.slider("价格分箱", 20, 60, 30, 5)
-    auto_refresh = st.checkbox("交易时段自动刷新（30s）", value=True)
-    if st.button("🔄 强制刷新", use_container_width=True):
+
+    # 🔧 关键：用 key 绑定 session_state，使「恢复默认」按钮生效
+    show_days = st.slider(
+        "显示天数", 5, 30, step=1, key="show_days"
+    )
+    chart_h = st.slider(
+        "单图高度", 220, 420, step=10, key="chart_h"
+    )
+    bins = st.slider(
+        "价格分箱", 20, 60, step=5, key="bins"
+    )
+    auto_refresh = st.checkbox(
+        "交易时段自动刷新（30s）", key="auto_refresh"
+    )
+
+    st.divider()
+
+    # ===== 恢复机制：3 个层级 =====
+    col_r1, col_r2 = st.columns(2)
+    with col_r1:
+        if st.button("↩️ 恢复默认", use_container_width=True,
+                     help="把所有滑块/选项还原到推荐值",
+                     on_click=reset_defaults):
+            st.toast("✅ 已恢复默认设置", icon="✅")
+
+    with col_r2:
+        if st.button("🔄 强制刷新", use_container_width=True,
+                     help="清缓存并重新拉取数据"):
+            st.cache_data.clear()
+            st.rerun()
+
+    if st.button("🧹 完全重置（清状态+缓存）", use_container_width=True,
+                 help="出问题救命按钮：彻底重置整个应用"):
         st.cache_data.clear()
+        st.cache_resource.clear()
+        for k in list(st.session_state.keys()):
+            del st.session_state[k]
         st.rerun()
+
+    st.markdown(
+        '<div class="reset-tip">💡 图形错乱时点 <b>↩️ 恢复默认</b>；'
+        '若仍异常，再点 <b>🧹 完全重置</b>。</div>',
+        unsafe_allow_html=True
+    )
+
     st.caption(f"刷新: {datetime.now().strftime('%H:%M:%S')}")
     if is_market_open():
         st.success("📡 交易中")
@@ -420,14 +476,22 @@ with st.sidebar:
         st.info("💤 休市中")
 
 
-# ====================== 顶部状态栏 ======================
-status_text = "🟢 交易中（数据每 30 秒自动更新）" if is_market_open() else "🔴 休市（显示最新收盘）"
-st.markdown(f"""
-<div class="top-bar">
-    <span class="top-title">📈 A股技术分析助手 · 量价分析</span>
-    <span>{status_text} · {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</span>
-</div>
-""", unsafe_allow_html=True)
+# ====================== 顶部状态栏（带快速恢复按钮）======================
+top_l, top_r = st.columns([5, 1])
+with top_l:
+    status_text = "🟢 交易中（30s 自动刷新）" if is_market_open() else "🔴 休市（最新收盘）"
+    st.markdown(f"""
+    <div class="top-bar">
+        <span class="top-title">📈 A股技术分析助手 · 量价分析</span>
+        <span>{status_text} · {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</span>
+    </div>
+    """, unsafe_allow_html=True)
+with top_r:
+    # 顶部一键恢复（无需打开侧边栏）
+    if st.button("↩️ 一键恢复", use_container_width=True,
+                 help="图形乱了点这里",
+                 on_click=reset_defaults):
+        st.toast("✅ 已恢复默认", icon="✅")
 
 
 # ====================== 2 × 2 网格 ======================
@@ -440,16 +504,20 @@ for row in range(2):
             break
         name, info = items[idx]
         with cols[c]:
-            df_full = fetch_data(info["code"], info["market"], 160)
-            if df_full is None or len(df_full) < 30:
-                st.error(f"❌ {name} 数据加载失败")
-                continue
-            df_full = compute_indicators(df_full)
-            df_show = df_full.tail(show_days).reset_index(drop=True)
-            levels  = find_levels_vp(df_full, bins=bins)
-            render_card(name, df_show, levels, chart_h)
+            try:
+                df_full = fetch_data(info["code"], info["market"], 160)
+                if df_full is None or len(df_full) < 30:
+                    st.error(f"❌ {name} 数据加载失败，请点 🔄 强制刷新")
+                    continue
+                df_full = compute_indicators(df_full)
+                df_show = df_full.tail(st.session_state.show_days).reset_index(drop=True)
+                levels  = find_levels_vp(df_full, bins=st.session_state.bins)
+                render_card(name, df_show, levels, st.session_state.chart_h)
+            except Exception as e:
+                st.error(f"⚠️ {name} 渲染异常：{e}")
+                st.info("👉 点击侧边栏「🧹 完全重置」可解决大部分问题")
 
 
-# ====================== 自动刷新（不阻塞 UI） ======================
-if auto_refresh and is_market_open():
+# ====================== 自动刷新 ======================
+if st.session_state.auto_refresh and is_market_open():
     st.markdown('<meta http-equiv="refresh" content="30">', unsafe_allow_html=True)
