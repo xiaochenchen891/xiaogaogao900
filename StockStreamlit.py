@@ -6,7 +6,6 @@ from datetime import datetime, time as dtime
 import requests
 import os
 
-# 清除代理（避免某些环境下请求失败）
 for k in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy"]:
     os.environ.pop(k, None)
 
@@ -17,34 +16,43 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# ====================== 默认配置 ======================
+# ====================== 默认值 ======================
 DEFAULTS = {
     "show_days":    7,
     "chart_h":      300,
     "bins":         30,
     "auto_refresh": True,
 }
-
-# 初始化 session_state
-for k, v in DEFAULTS.items():
-    if k not in st.session_state:
-        st.session_state[k] = v
+WIDGET_KEYS = list(DEFAULTS.keys())
 
 
-def reset_defaults():
-    """恢复所有控件到默认值"""
-    for k, v in DEFAULTS.items():
-        st.session_state[k] = v
-    st.cache_data.clear()
+def hard_reset():
+    """🔧 一键恢复 = 删除所有控件 state + 清所有缓存 + 重新运行
+    控件下次渲染会从 value= 参数读取默认值，100% 生效。"""
+    # 1. 删除所有控件状态
+    for k in WIDGET_KEYS:
+        if k in st.session_state:
+            del st.session_state[k]
+    # 2. 清数据缓存
+    try:
+        st.cache_data.clear()
+    except Exception:
+        pass
+    try:
+        st.cache_resource.clear()
+    except Exception:
+        pass
+    # 3. 标记需要 toast
+    st.session_state["_just_reset"] = True
 
 
-# ====================== 是否交易时段 ======================
 def is_market_open():
     now = datetime.now()
     if now.weekday() >= 5:
         return False
     t = now.time()
     return (dtime(9, 25) <= t <= dtime(11, 32)) or (dtime(13, 0) <= t <= dtime(15, 2))
+
 
 # ====================== CSS ======================
 st.markdown("""
@@ -67,7 +75,7 @@ st.markdown("""
 
     .stock-header {
         display:flex; justify-content:space-between; align-items:center;
-        flex-wrap:wrap; gap:6px; padding:4px 4px 4px 4px;
+        flex-wrap:wrap; gap:6px; padding:4px;
         background:#fff; border:1px solid #eee; border-radius:6px;
         margin-bottom:2px;
     }
@@ -77,17 +85,11 @@ st.markdown("""
         display:inline-flex; align-items:center; gap:5px;
         padding:2px 9px; border-radius:12px; font-size:0.78rem; font-weight:600;
     }
-    .badge::before {
-        content:""; width:7px; height:7px; border-radius:50%; display:inline-block;
-    }
-    .badge-sup {background:#e8f5e9; color:#1b5e20;}
-    .badge-sup::before {background:#43a047;}
-    .badge-add {background:#e0f7fa; color:#006064;}
-    .badge-add::before {background:#00bcd4;}
-    .badge-stop {background:#fff3e0; color:#e65100;}
-    .badge-stop::before {background:#ff9800;}
-    .badge-res {background:#ffebee; color:#b71c1c;}
-    .badge-res::before {background:#e53935;}
+    .badge::before {content:""; width:7px; height:7px; border-radius:50%; display:inline-block;}
+    .badge-sup  {background:#e8f5e9; color:#1b5e20;} .badge-sup::before  {background:#43a047;}
+    .badge-add  {background:#e0f7fa; color:#006064;} .badge-add::before  {background:#00bcd4;}
+    .badge-stop {background:#fff3e0; color:#e65100;} .badge-stop::before {background:#ff9800;}
+    .badge-res  {background:#ffebee; color:#b71c1c;} .badge-res::before  {background:#e53935;}
 
     .legend-row {
         display:flex; gap:14px; padding:2px 4px; font-size:0.72rem;
@@ -102,15 +104,16 @@ st.markdown("""
     .lg-red::before    {background:#ef9a9a;}
     .lg-orange::before {background:#ffcc80;}
 
-    /* 恢复按钮高亮 */
-    .reset-tip {
-        background:#fffde7; border:1px dashed #fbc02d;
-        border-radius:6px; padding:6px 8px; margin-top:8px;
-        font-size:0.75rem; color:#795548;
-    }
-
-    [data-testid="stVerticalBlock"] {gap: 0.35rem !important;}
+    [data-testid="stVerticalBlock"]   {gap: 0.35rem !important;}
     [data-testid="stHorizontalBlock"] {gap: 0.5rem !important;}
+
+    /* 顶部恢复按钮高亮 */
+    div[data-testid="column"]:nth-child(2) button {
+        background:linear-gradient(90deg,#fff8e1,#ffecb3) !important;
+        border:1px solid #ffb300 !important;
+        font-weight:700 !important;
+        color:#e65100 !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -203,7 +206,7 @@ def compute_indicators(df):
     return df
 
 
-# ====================== 量价综合：支撑/压力 ======================
+# ====================== 量价 ======================
 def find_levels_vp(df_full, bins=30):
     close = float(df_full["close"].iloc[-1])
     n = len(df_full)
@@ -232,13 +235,8 @@ def find_levels_vp(df_full, bins=30):
         recent = df_full.tail(window).reset_index(drop=True)
         m = len(recent)
 
-        tv = np.zeros(bins)
-        uv = np.zeros(bins)
-        dv = np.zeros(bins)
-        st_ = np.zeros(bins)
-        rt_ = np.zeros(bins)
-        sr  = np.zeros(bins)
-        rr  = np.zeros(bins)
+        tv = np.zeros(bins); uv = np.zeros(bins); dv = np.zeros(bins)
+        st_ = np.zeros(bins); rt_ = np.zeros(bins); sr  = np.zeros(bins); rr  = np.zeros(bins)
 
         avg_range = (recent["high"] - recent["low"]).replace(0, np.nan).mean()
         if pd.isna(avg_range) or avg_range <= 0:
@@ -259,19 +257,15 @@ def find_levels_vp(df_full, bins=30):
             wv = v * rec_w / len(touched)
             for idx in touched:
                 tv[idx] += wv
-                if c >= o:
-                    uv[idx] += wv
-                else:
-                    dv[idx] += wv
+                if c >= o: uv[idx] += wv
+                else:      dv[idx] += wv
             for j, p in enumerate(centers):
                 if abs(lo - p) <= tol:
                     st_[j] += 1
-                    if c > p and c >= o:
-                        sr[j] += 1
+                    if c > p and c >= o: sr[j] += 1
                 if abs(hi - p) <= tol:
                     rt_[j] += 1
-                    if c < p and c <= o:
-                        rr[j] += 1
+                    if c < p and c <= o: rr[j] += 1
 
         def nm(a):
             mx = np.nanmax(a)
@@ -302,10 +296,8 @@ def find_levels_vp(df_full, bins=30):
 
     sup = pick(below, fs)
     res = pick(above, fr)
-    if sup is None:
-        sup = close * 0.97
-    if res is None:
-        res = close * 1.03
+    if sup is None: sup = close * 0.97
+    if res is None: res = close * 1.03
 
     stop     = sup * 0.98
     add_low  = sup * 0.992
@@ -320,7 +312,7 @@ def find_levels_vp(df_full, bins=30):
     }
 
 
-# ====================== 单图绘制 ======================
+# ====================== 绘图 ======================
 def plot_card_chart(df_show, levels, height=300):
     df = df_show.copy().reset_index(drop=True)
     df["x"] = df["date"].dt.strftime("%m/%d")
@@ -333,7 +325,6 @@ def plot_card_chart(df_show, levels, height=300):
     y_max = max(df["high"].max(), res) * 1.02
 
     fig = go.Figure()
-
     fig.add_hrect(y0=res,   y1=y_max, fillcolor="rgba(255,152,0,0.10)", line_width=0, layer="below")
     fig.add_hrect(y0=stop,  y1=sup,   fillcolor="rgba(76,175,80,0.10)", line_width=0, layer="below")
     fig.add_hrect(y0=y_min, y1=stop,  fillcolor="rgba(244,67,54,0.10)", line_width=0, layer="below")
@@ -350,22 +341,17 @@ def plot_card_chart(df_show, levels, height=300):
                   annotation_font=dict(size=10, color="#ff9800"))
 
     fig.add_trace(go.Scatter(
-        x=df["x"], y=df["close"],
-        mode="lines+markers",
+        x=df["x"], y=df["close"], mode="lines+markers",
         name=f"收盘价 (现价 {close_now:.2f})",
         line=dict(color="#1e88e5", width=2.6, shape="spline"),
         marker=dict(size=7, color="#1e88e5"),
     ))
     if df["MA5"].notna().any():
-        fig.add_trace(go.Scatter(
-            x=df["x"], y=df["MA5"], mode="lines", name="MA5",
-            line=dict(color="#ab47bc", width=1.2, dash="dash")
-        ))
+        fig.add_trace(go.Scatter(x=df["x"], y=df["MA5"], mode="lines", name="MA5",
+                                 line=dict(color="#ab47bc", width=1.2, dash="dash")))
     if df["MA10"].notna().any():
-        fig.add_trace(go.Scatter(
-            x=df["x"], y=df["MA10"], mode="lines", name="MA10",
-            line=dict(color="#26c6da", width=1.2, dash="dash")
-        ))
+        fig.add_trace(go.Scatter(x=df["x"], y=df["MA10"], mode="lines", name="MA10",
+                                 line=dict(color="#26c6da", width=1.2, dash="dash")))
 
     fig.add_annotation(
         x=df["x"].iloc[-1], y=close_now,
@@ -373,7 +359,6 @@ def plot_card_chart(df_show, levels, height=300):
         showarrow=False, xshift=-8, yshift=14,
         font=dict(size=10, color="#1e88e5"),
     )
-
     fig.update_layout(
         height=height,
         margin=dict(l=8, r=18, t=10, b=28),
@@ -388,11 +373,9 @@ def plot_card_chart(df_show, levels, height=300):
     return fig
 
 
-# ====================== 渲染单卡片 ======================
 def render_card(name, df_show, levels, height):
     sup, res, stop = levels["支撑"], levels["压力"], levels["止损"]
     al, ah = levels["补仓低"], levels["补仓高"]
-
     st.markdown(f"""
     <div class="stock-header">
         <div class="stock-name">{name}</div>
@@ -404,13 +387,11 @@ def render_card(name, df_show, levels, height):
         </div>
     </div>
     """, unsafe_allow_html=True)
-
     st.plotly_chart(
         plot_card_chart(df_show, levels, height=height),
         use_container_width=True,
         config={"displayModeBar": False},
     )
-
     st.markdown("""
     <div class="legend-row">
         <span class="lg-green">绿色区: 支撑-止损之间</span>
@@ -421,62 +402,7 @@ def render_card(name, df_show, levels, height):
     """, unsafe_allow_html=True)
 
 
-# ====================== 侧边栏（含恢复机制）======================
-with st.sidebar:
-    st.markdown("## ⚙️ 设置")
-
-    # 🔧 关键：用 key 绑定 session_state，使「恢复默认」按钮生效
-    show_days = st.slider(
-        "显示天数", 5, 30, step=1, key="show_days"
-    )
-    chart_h = st.slider(
-        "单图高度", 220, 420, step=10, key="chart_h"
-    )
-    bins = st.slider(
-        "价格分箱", 20, 60, step=5, key="bins"
-    )
-    auto_refresh = st.checkbox(
-        "交易时段自动刷新（30s）", key="auto_refresh"
-    )
-
-    st.divider()
-
-    # ===== 恢复机制：3 个层级 =====
-    col_r1, col_r2 = st.columns(2)
-    with col_r1:
-        if st.button("↩️ 恢复默认", use_container_width=True,
-                     help="把所有滑块/选项还原到推荐值",
-                     on_click=reset_defaults):
-            st.toast("✅ 已恢复默认设置", icon="✅")
-
-    with col_r2:
-        if st.button("🔄 强制刷新", use_container_width=True,
-                     help="清缓存并重新拉取数据"):
-            st.cache_data.clear()
-            st.rerun()
-
-    if st.button("🧹 完全重置（清状态+缓存）", use_container_width=True,
-                 help="出问题救命按钮：彻底重置整个应用"):
-        st.cache_data.clear()
-        st.cache_resource.clear()
-        for k in list(st.session_state.keys()):
-            del st.session_state[k]
-        st.rerun()
-
-    st.markdown(
-        '<div class="reset-tip">💡 图形错乱时点 <b>↩️ 恢复默认</b>；'
-        '若仍异常，再点 <b>🧹 完全重置</b>。</div>',
-        unsafe_allow_html=True
-    )
-
-    st.caption(f"刷新: {datetime.now().strftime('%H:%M:%S')}")
-    if is_market_open():
-        st.success("📡 交易中")
-    else:
-        st.info("💤 休市中")
-
-
-# ====================== 顶部状态栏（带快速恢复按钮）======================
+# ====================== 顶部状态栏 + 一键恢复 ======================
 top_l, top_r = st.columns([5, 1])
 with top_l:
     status_text = "🟢 交易中（30s 自动刷新）" if is_market_open() else "🔴 休市（最新收盘）"
@@ -487,14 +413,55 @@ with top_l:
     </div>
     """, unsafe_allow_html=True)
 with top_r:
-    # 顶部一键恢复（无需打开侧边栏）
+    # ✨ 关键改动：一键恢复 = 清状态 + 清缓存 + rerun
     if st.button("↩️ 一键恢复", use_container_width=True,
-                 help="图形乱了点这里",
-                 on_click=reset_defaults):
-        st.toast("✅ 已恢复默认", icon="✅")
+                 help="图形乱了点这里：清空所有设置和缓存，刷新页面"):
+        hard_reset()
+        st.rerun()   # ← 立即重新跑整个脚本
+
+# 显示 toast 提示（恢复后下一次渲染时显示）
+if st.session_state.pop("_just_reset", False):
+    st.toast("✅ 已恢复默认设置并刷新", icon="🔄")
 
 
-# ====================== 2 × 2 网格 ======================
+# ====================== 侧边栏 ======================
+with st.sidebar:
+    st.markdown("## ⚙️ 设置")
+
+    # 注意：所有 widget 都给了 value= 默认值，删掉 key 后会自动回到这个默认值
+    show_days = st.slider(
+        "显示天数", 5, 30, value=DEFAULTS["show_days"], step=1, key="show_days"
+    )
+    chart_h = st.slider(
+        "单图高度", 220, 420, value=DEFAULTS["chart_h"], step=10, key="chart_h"
+    )
+    bins = st.slider(
+        "价格分箱", 20, 60, value=DEFAULTS["bins"], step=5, key="bins"
+    )
+    auto_refresh = st.checkbox(
+        "交易时段自动刷新（30s）", value=DEFAULTS["auto_refresh"], key="auto_refresh"
+    )
+
+    st.divider()
+
+    if st.button("↩️ 恢复默认 + 刷新", use_container_width=True,
+                 type="primary"):
+        hard_reset()
+        st.rerun()
+
+    if st.button("🔄 仅刷新数据", use_container_width=True,
+                 help="保留设置，仅清缓存重新拉数据"):
+        st.cache_data.clear()
+        st.rerun()
+
+    st.caption(f"刷新: {datetime.now().strftime('%H:%M:%S')}")
+    if is_market_open():
+        st.success("📡 交易中")
+    else:
+        st.info("💤 休市中")
+
+
+# ====================== 主体 ======================
 items = list(TARGETS.items())
 for row in range(2):
     cols = st.columns(2, gap="small")
@@ -507,17 +474,17 @@ for row in range(2):
             try:
                 df_full = fetch_data(info["code"], info["market"], 160)
                 if df_full is None or len(df_full) < 30:
-                    st.error(f"❌ {name} 数据加载失败，请点 🔄 强制刷新")
+                    st.error(f"❌ {name} 数据加载失败，请点 🔄 仅刷新数据")
                     continue
                 df_full = compute_indicators(df_full)
-                df_show = df_full.tail(st.session_state.show_days).reset_index(drop=True)
-                levels  = find_levels_vp(df_full, bins=st.session_state.bins)
-                render_card(name, df_show, levels, st.session_state.chart_h)
+                df_show = df_full.tail(show_days).reset_index(drop=True)
+                levels  = find_levels_vp(df_full, bins=bins)
+                render_card(name, df_show, levels, chart_h)
             except Exception as e:
                 st.error(f"⚠️ {name} 渲染异常：{e}")
-                st.info("👉 点击侧边栏「🧹 完全重置」可解决大部分问题")
+                st.info("👉 点击右上角「↩️ 一键恢复」即可解决")
 
 
 # ====================== 自动刷新 ======================
-if st.session_state.auto_refresh and is_market_open():
+if auto_refresh and is_market_open():
     st.markdown('<meta http-equiv="refresh" content="30">', unsafe_allow_html=True)
